@@ -1,0 +1,19 @@
+# 编译产物
+*.o
+*.out
+*.exe
+*.a
+*.so
+build/
+cmake-build-*/
+
+# Python 缓存和虚拟环境
+__pycache__/
+*.py[cod]
+.venv/
+
+# 编辑器和系统文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
