@@ -6,7 +6,8 @@
 // 3. 连续多帧确认蓝色区域消失；
 // 4. 延时后启动电机，进入基础运行测试。
 //
-// 本文件仅进行视觉测试，不控制电机、舵机或 GPIO。
+// 更新说明：摄像头改为先采集 1920x1080，再缩放到 320x180 进行挡板检测；保留原有多帧确认逻辑。
+// 更新日期：2026-09
 
 #include <opencv2/opencv.hpp>
 
@@ -20,8 +21,10 @@ using namespace cv;
 using namespace std;
 
 namespace DangBanConfig {
-	constexpr int image_width = 640;
-	constexpr int image_height = 480;
+	constexpr int capture_width = 1920;
+	constexpr int capture_height = 1080;
+	constexpr int image_width = 320;
+	constexpr int image_height = 180;
 
 	// 参考 g5g-new/bule_card.cpp 的蓝色 HSV 范围。
 	constexpr int blue_h_min = 100;
@@ -31,14 +34,14 @@ namespace DangBanConfig {
 
 	// 挡板位于摄像头画面中部时使用该 ROI。
 	// 如实际摄像头画面中挡板位置不同，可改为 0 和 image_height。
-	constexpr int roi_top = 107;
-	constexpr int roi_bottom = 373;
+	constexpr int roi_top = 40;
+	constexpr int roi_bottom = 140;
 
 	// 蓝色面积阈值：需要根据实际画面调试。
 	// 当前 area 是 ROI 内有效蓝色轮廓的 contourArea，不是整幅图像像素数。
-	// 画面改为 640*480 后，ROI 高度同步按比例调整。
-	constexpr double board_present_area = 80000.0;
-	constexpr double board_removed_area = 40000.0;
+	// 当前画面为 640*360，ROI 高度已按比例调整。
+	constexpr double board_present_area = 15000.0;
+	constexpr double board_removed_area = 7500.0;
 
 	// 连续帧确认，避免单帧误识别导致车辆启动。
 	constexpr int present_confirm_frames = 15;
@@ -144,8 +147,8 @@ int main() {
 		return 1;
 	}
 
-	camera.set(CAP_PROP_FRAME_WIDTH, DangBanConfig::image_width);
-	camera.set(CAP_PROP_FRAME_HEIGHT, DangBanConfig::image_height);
+	camera.set(CAP_PROP_FRAME_WIDTH, DangBanConfig::capture_width);
+	camera.set(CAP_PROP_FRAME_HEIGHT, DangBanConfig::capture_height);
 	// 尽量只保留一帧，减少 USB 摄像头缓冲造成的画面延迟。
 	camera.set(CAP_PROP_BUFFERSIZE, 1);
 

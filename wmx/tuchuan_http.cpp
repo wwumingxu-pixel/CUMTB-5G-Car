@@ -1,15 +1,21 @@
-#include <arpa/inet.h>
+// 更新说明：新增 1920x1080 摄像头采集与 320x180 缩放输出，图传线程只保留最新 JPEG，减少网络延迟。
+// 更新日期：2026-09
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <atomic>
+#include <chrono>
 #include <csignal>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <opencv2/opencv.hpp>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -18,11 +24,20 @@ std::atomic<bool> g_running(true);
 
 constexpr int kDefaultPort = 8090;
 constexpr int kDefaultCameraId = 0;
-constexpr int kDefaultWidth = 640;
-constexpr int kDefaultHeight = 480;
+constexpr int kCaptureWidth = 1920;
+constexpr int kCaptureHeight = 1080;
+constexpr int kDefaultWidth = 320;
+constexpr int kDefaultHeight = 180;
 constexpr int kDefaultJpegQuality = 45;
-constexpr int kDefaultFps = 24;
+constexpr int kDefaultFps = 25;
 constexpr const char* kPiIp = "192.168.137.161";
+
+struct LatestJpegFrame {
+    std::mutex mutex;
+    std::condition_variable ready;
+    std::vector<uint8_t> bytes;
+    uint64_t sequence = 0;
+};
 
 void onSignal(int) {
     g_running = false;
@@ -251,8 +266,11 @@ std::string parsePath(const char* request_buf) {
 
 void printUsage(const char* prog) {
     std::cout << "Usage: " << prog
-              << " [port] [camera_id] [width] [height] [jpeg_quality] [fps]" << std::endl;
-    std::cout << "Example: " << prog << " 8080 0 320 240 45 20" << std::endl;
+              << " [port] [camera_id] [stream_width] [stream_height]"
+              << " [jpeg_quality] [fps]" << std::endl;
+    std::cout << "Camera capture is fixed at 1920x1080; width and height"
+              << " control the resized MJPEG output." << std::endl;
+    std::cout << "Example: " << prog << " 8080 0 320 180 45 25" << std::endl;
     std::cout << "Open browser: http://<raspberry_pi_ip>:8080/" << std::endl;
 }
 
@@ -291,6 +309,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    if (width <= 0 || height <= 0) {
+        std::cerr << "Stream width and height must be positive" << std::endl;
+        return 1;
+    }
     if (jpeg_quality < 10) jpeg_quality = 10;
     if (jpeg_quality > 95) jpeg_quality = 95;
     if (fps < 5) fps = 5;
@@ -299,14 +321,16 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
 
-    cv::VideoCapture cap(camera_id);
+    cv::VideoCapture cap(camera_id, cv::CAP_V4L2);
     if (!cap.isOpened()) {
         std::cerr << "Failed to open camera: " << camera_id << std::endl;
         return 1;
     }
 
-    cap.set(cv::CAP_PROP_FRAME_WIDTH, width);
-    cap.set(cv::CAP_PROP_FRAME_HEIGHT, height);
+    cap.set(cv::CAP_PROP_FOURCC,
+            cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
+    cap.set(cv::CAP_PROP_FRAME_WIDTH, kCaptureWidth);
+    cap.set(cv::CAP_PROP_FRAME_HEIGHT, kCaptureHeight);
     cap.set(cv::CAP_PROP_FPS, fps);
     cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
 
@@ -340,13 +364,54 @@ int main(int argc, char** argv) {
     std::cout << "HTTP MJPEG stream started on port " << port << std::endl;
     std::cout << "Open: http://<raspberry_pi_ip>:" << port << "/" << std::endl;
     printOpenUrl(port);
-    std::cout << "Params: cam=" << camera_id << " " << width << "x" << height
+    const int actual_fourcc = static_cast<int>(cap.get(cv::CAP_PROP_FOURCC));
+    std::string actual_format(4, ' ');
+    for (int index = 0; index < 4; ++index) {
+        actual_format[index] = static_cast<char>(
+            (actual_fourcc >> (8 * index)) & 0xff);
+    }
+    std::cout << "Camera actual mode: "
+              << cap.get(cv::CAP_PROP_FRAME_WIDTH) << "x"
+              << cap.get(cv::CAP_PROP_FRAME_HEIGHT) << " @ "
+              << cap.get(cv::CAP_PROP_FPS) << " FPS "
+              << actual_format << std::endl;
+    std::cout << "Params: cam=" << camera_id
+              << " capture=" << kCaptureWidth << "x" << kCaptureHeight
+              << " stream=" << width << "x" << height
               << " q=" << jpeg_quality << " fps=" << fps << std::endl;
 
-    std::vector<int> jpeg_params = {cv::IMWRITE_JPEG_QUALITY, jpeg_quality};
-    std::vector<uint8_t> jpg;
-    cv::Mat frame;
-    const int delay_ms = 1000 / fps;
+    const std::vector<int> jpeg_params = {cv::IMWRITE_JPEG_QUALITY, jpeg_quality};
+    LatestJpegFrame latest_frame;
+
+    // Capture the full-view sensor mode, resize the whole frame for MJPEG, and
+    // keep only the newest encoded frame when a network client is slow.
+    std::thread capture_thread([&] {
+        cv::Mat frame;
+        cv::Mat stream_frame;
+        std::vector<uint8_t> jpg;
+
+        while (g_running) {
+            if (!cap.read(frame) || frame.empty()) {
+                std::cerr << "Camera read failed" << std::endl;
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                continue;
+            }
+
+            cv::resize(frame, stream_frame, cv::Size(width, height),
+                       0.0, 0.0, cv::INTER_AREA);
+            if (!cv::imencode(".jpg", stream_frame, jpg, jpeg_params)) {
+                std::cerr << "JPEG encode failed" << std::endl;
+                continue;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(latest_frame.mutex);
+                latest_frame.bytes = jpg;
+                ++latest_frame.sequence;
+            }
+            latest_frame.ready.notify_all();
+        }
+    });
 
     while (g_running) {
         sockaddr_in client_addr;
@@ -373,6 +438,13 @@ int main(int argc, char** argv) {
             continue;
         }
 
+        const int no_delay = 1;
+        ::setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &no_delay, sizeof(no_delay));
+        // A small socket buffer avoids accumulating a long queue of old MJPEG frames.
+        const int send_buffer_bytes = 64 * 1024;
+        ::setsockopt(client_fd, SOL_SOCKET, SO_SNDBUF,
+                     &send_buffer_bytes, sizeof(send_buffer_bytes));
+
         std::string header =
             "HTTP/1.0 200 OK\r\n"
             "Server: smartcar-mjpeg\r\n"
@@ -388,15 +460,20 @@ int main(int argc, char** argv) {
             continue;
         }
 
+        uint64_t sent_sequence = 0;
         while (g_running) {
-            if (!cap.read(frame) || frame.empty()) {
-                std::cerr << "Camera read failed" << std::endl;
-                break;
-            }
-
-            if (!cv::imencode(".jpg", frame, jpg, jpeg_params)) {
-                std::cerr << "JPEG encode failed" << std::endl;
-                continue;
+            std::vector<uint8_t> jpg;
+            {
+                std::unique_lock<std::mutex> lock(latest_frame.mutex);
+                latest_frame.ready.wait_for(lock, std::chrono::milliseconds(500), [&] {
+                    return !g_running || latest_frame.sequence != sent_sequence;
+                });
+                if (!g_running) break;
+                if (latest_frame.sequence == sent_sequence || latest_frame.bytes.empty()) {
+                    continue;
+                }
+                jpg = latest_frame.bytes;
+                sent_sequence = latest_frame.sequence;
             }
 
             std::string part_header =
@@ -407,16 +484,15 @@ int main(int argc, char** argv) {
             if (!sendString(client_fd, part_header)) break;
             if (!sendAll(client_fd, jpg.data(), jpg.size())) break;
             if (!sendString(client_fd, "\r\n")) break;
-
-            if (delay_ms > 0) {
-                cv::waitKey(delay_ms);
-            }
         }
 
         std::cout << "Client disconnected" << std::endl;
         ::close(client_fd);
     }
 
+    g_running = false;
+    latest_frame.ready.notify_all();
+    if (capture_thread.joinable()) capture_thread.join();
     ::close(server_fd);
     cap.release();
     return 0;

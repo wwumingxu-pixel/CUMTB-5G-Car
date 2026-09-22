@@ -1,6 +1,7 @@
 // 蓝色锥桶纯视觉识别测试
 // 比赛锥桶尺寸：高度约 8 cm，底部直径约 7.8 cm。
-// 程序按颜色、轮廓面积和外接矩形形状过滤，并在画面中框出候选锥桶。
+// 更新说明：先采集 1920x1080，再缩放到 320x180 进行锥桶识别；键盘/网页控制见 keyboard_http_control.cpp。
+// 更新日期：2026-09
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -23,19 +24,21 @@ using namespace cv;
 using namespace std;
 
 namespace ConeConfig {
-	constexpr int image_width = 640;
-	constexpr int image_height = 480;
+	constexpr int image_width = 320;
+	constexpr int image_height = 180;
+	constexpr int camera_width = 1920;
+	constexpr int camera_height = 1080;
 	constexpr int camera_index = 0;
 	constexpr int http_port = 8090;
 	constexpr int stream_width = 320;
-	constexpr int stream_height = 240;
+	constexpr int stream_height = 180;
 	constexpr int jpeg_quality = 45;
 	constexpr int stream_fps = 20;
 	constexpr const char* pi_ip = "192.168.137.161";
-	constexpr size_t max_cones = 2;
+	constexpr size_t max_cones = 5;
 
 	// 锥桶在地面上，主要检测画面下方 35%～100%。
-	constexpr double roi_top_ratio = 0.35;
+	constexpr double roi_top_ratio = 0.40;
 
 	// 参考现有工程的蓝色 HSV 阈值，并适当放宽以识别远处小目标。
 	constexpr int blue_h_min = 95;
@@ -43,18 +46,18 @@ namespace ConeConfig {
 	constexpr int blue_s_min = 55;
 	constexpr int blue_v_min = 45;
 
-	// 640×480 下的初始过滤参数，需要根据现场距离调节。
-	constexpr double min_area = 25.0;
-	constexpr double max_area = 50000.0;
-	constexpr int min_width = 4;
-	constexpr int min_height = 4;
-	constexpr int max_width = 300;
-	constexpr int max_height = 300;
+	// 320×180 下的初始过滤参数。提高最小尺寸，过滤零散蓝色噪点。
+	constexpr double min_area = 30.0;
+	constexpr double max_area = 9000.0;
+	constexpr int min_width = 5;
+	constexpr int min_height = 5;
+	constexpr int max_width = 150;
+	constexpr int max_height = 113;
 
 	// 8cm 高、7.8cm 底径接近 1:1；考虑透视、遮挡和检测误差，范围放宽。
-	constexpr double min_aspect_ratio = 0.35; // width / height
-	constexpr double max_aspect_ratio = 1.80;
-	constexpr double min_fill_ratio = 0.20;
+	constexpr double min_aspect_ratio = 0.40; //
+	constexpr double max_aspect_ratio = 1.80;//
+	constexpr double min_fill_ratio = 0.20;// 轮廓面积 / 外接矩形面积
 }
 
 struct ConeDetection {
@@ -442,8 +445,9 @@ int main() {
 		return 1;
 	}
 
-	camera.set(CAP_PROP_FRAME_WIDTH, ConeConfig::image_width);
-	camera.set(CAP_PROP_FRAME_HEIGHT, ConeConfig::image_height);
+	// 先采集摄像头原始 1920×1080，再在后面压缩到 320×180 处理。
+	camera.set(CAP_PROP_FRAME_WIDTH, ConeConfig::camera_width);
+	camera.set(CAP_PROP_FRAME_HEIGHT, ConeConfig::camera_height);
 	camera.set(CAP_PROP_FPS, 30);
 	camera.set(CAP_PROP_BUFFERSIZE, 1);
 

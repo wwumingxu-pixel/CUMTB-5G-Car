@@ -1,23 +1,23 @@
+// 更新说明：舵机 GPIO 改为 BCM GPIO12，并改用 510~2510us 脉宽映射角度；扫描范围调整为 60~120°。
+// 更新日期：2026-09
 #include <pigpio.h>
 #include <iostream>
 #include <unistd.h>
 
 using namespace std;
 
-const int SERVO_PIN = 17;
+const int SERVO_PIN = 12;
 
-static double angleToDutyCycle(int angle) {
-    // 50Hz 伺服控制，通常 0.5ms~2.5ms 对应 0~180°
-    // 这里按常见写法映射到 0~180°
-    return 2.5 + (angle / 180.0) * 10.0;
+static int angleToPulseWidth(int angle) {
+    // gpioServo 的参数单位是微秒，常见舵机范围为 500~2500us。
+    return 510 + (angle * 2000) / 180;
 }
 
 static void setServoAngle(int angle) {
     if (angle < 0) angle = 0;
     if (angle > 180) angle = 180;
 
-    double duty = angleToDutyCycle(angle);
-    gpioServo(SERVO_PIN, static_cast<int>(duty * 1000.0));
+    gpioServo(SERVO_PIN, angleToPulseWidth(angle));
 }
 
 static void servoTestSequence() {
@@ -25,17 +25,17 @@ static void servoTestSequence() {
 
     cout << "1. 初始化到 90°" << endl;
     setServoAngle(90);
-    sleep(2);
+    sleep(1);
 
-    cout << "2. 左转扫描 60° -> 140°" << endl;
-    for (int angle = 60; angle <= 140; angle += 10) {
+    cout << "2. 左转扫描 60° -> 120°" << endl;
+    for (int angle = 60; angle <= 120; angle += 10) {
         cout << "angle = " << angle << "°" << endl;
         setServoAngle(angle);
         sleep(1);
     }
 
-    cout << "3. 右转扫描 140° -> 60°" << endl;
-    for (int angle = 140; angle >= 60; angle -= 10) {
+    cout << "3. 右转扫描 120° -> 60°" << endl;
+    for (int angle = 120; angle >= 60; angle -= 10) {
         cout << "angle = " << angle << "°" << endl;
         setServoAngle(angle);
         sleep(1);

@@ -1,68 +1,99 @@
-#include <pigpio.h>
+// 更新说明：电机由固定流程改为命令行手动 PWM 测试，可输入 PWM 值测试停止、前进和后退；退出自动回到 10000 中位。
+// 更新日期：2026-09
+#include <chrono>
+#include <csignal>
 #include <iostream>
-#include <unistd.h>
+#include <stdexcept>
+#include <string>
+#include <thread>
 
 using namespace std;
 
-// 这个项目里用的是单路 PWM 控制电机
-// 如果你们实际接线是 L298N / TB6612FNG 这类驱动板，
-// 需要按自己的 IN1/IN2/ENA 连接方式来改。
+// 实测确认：中位 10000 停止；>10000 前进；<10000 后退（9500 开始后退）。
 const int MOTOR_PIN = 13;
 const int PWM_RANGE = 40000;
 const int PWM_FREQ = 200;
 
-static void setMotorPwm(int value) {
-    if (value < 0) value = 0;
-    if (value > PWM_RANGE) value = PWM_RANGE;
-    gpioPWM(MOTOR_PIN, value);
+const int STOP_DUTY = 10000;     // 中位停止
+const int FORWARD_DUTY = 11000;  // 前进
+const int REVERSE_DUTY = 9000;   // 后退（9500 开始，取 9000 稳定后退）
+
+static volatile sig_atomic_t g_stop = 0;
+
+static void onSignal(int) {
+    g_stop = 1;
 }
 
-static void motorTestSequence() {
-    cout << "=== 马达测试开始 ===" << endl;
-    cout << "1. 停止 2 秒" << endl;
-    setMotorPwm(0);
-    sleep(2);
+static void setDuty(int duty) {
+    if (duty < 0) duty = 0;
+    if (duty > PWM_RANGE) duty = PWM_RANGE;
+    gpioPWM(MOTOR_PIN, duty);
+    cout << "duty=" << duty << endl;
+}
 
-    cout << "2. 从 10000 开始缓慢加速，步进 1000" << endl;
-    for (int v = 10000; v <= 16000; v += 1000) {
-        cout << "PWM = " << v << endl;
-        setMotorPwm(v);
-        usleep(600000); // 600ms
+static void sleepFor(int ms) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while (!g_stop && std::chrono::steady_clock::now() < end) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+}
+
+static void manualControl() {
+    cout << "=== 电机手动调试 ===" << endl;
+    cout << "中位 " << STOP_DUTY << " 停止；前进参考 " << FORWARD_DUTY
+         << "；后退参考 " << REVERSE_DUTY << "（9500 开始后退）。" << endl;
+    cout << "输入 0~40000 设 duty；q 回中位退出。" << endl;
+
+    string input;
+    while (!g_stop) {
+        cout << "> " << flush;
+        if (!(cin >> input)) break;
+        if (input == "q" || input == "Q") break;
+        try {
+            size_t used = 0;
+            const int value = stoi(input, &used);
+            if (used != input.size()) throw invalid_argument("extra characters");
+            setDuty(value);
+        } catch (...) {
+            cout << "输入无效，请输入 0~40000 的整数或 q。" << endl;
+        }
     }
 
-    cout << "3. 保持高速 16000" << endl;
-    setMotorPwm(16000);
-    sleep(2);
-
-    cout << "4. 缓慢减速" << endl;
-    for (int v = 16000; v >= 10000; v -= 1000) {
-        cout << "PWM = " << v << endl;
-        setMotorPwm(v);
-        usleep(600000); // 600ms
-    }
-
-    cout << "5. 停止" << endl;
-    setMotorPwm(0);
-    sleep(1);
-
-    cout << "=== 马达测试结束 ===" << endl;
+    setDuty(STOP_DUTY);
+    cout << "已回中位 " << STOP_DUTY << "。" << endl;
 }
 
 int main() {
+    if (gpioCfgSetInternals(PI_CFG_NOSIGHANDLER) < 0) {
+        cerr << "无法禁用 pigpio 信号处理。" << endl;
+        return 1;
+    }
     if (gpioInitialise() < 0) {
-        cerr << "gpio 初始化失败，确认是否已运行 pigpiod" << endl;
+        cerr << "gpio 初始化失败。请使用 sudo 运行，并确认 GPIO13 未被其他程序占用。" << endl;
         return 1;
     }
 
-    gpioSetMode(MOTOR_PIN, PI_OUTPUT);
-    gpioSetPWMrange(MOTOR_PIN, PWM_RANGE);
-    gpioSetPWMfrequency(MOTOR_PIN, PWM_FREQ);
+    struct sigaction sa {};
+    sa.sa_handler = onSignal;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
 
-    // 初始化时先停下
-    gpioPWM(MOTOR_PIN, 0);
-    sleep(1);
+    if (gpioSetMode(MOTOR_PIN, PI_OUTPUT) < 0) {
+        cerr << "GPIO" << MOTOR_PIN << " cannot be configured as output" << endl;
+        gpioTerminate();
+        return 1;
+    }
 
-    motorTestSequence();
+    // 顺序：先设频率，再设范围（此顺序下 duty 才有 0~40000 区分度，10000 为中位）。
+    const int freq = gpioSetPWMfrequency(MOTOR_PIN, PWM_FREQ);
+    const int range = gpioSetPWMrange(MOTOR_PIN, PWM_RANGE);
+    cout << "Motor GPIO" << MOTOR_PIN << " range=" << range << ", freq=" << freq << " Hz" << endl;
+
+    setDuty(STOP_DUTY);  // 先回中位
+    sleepFor(2000);
+
+    manualControl();
 
     gpioTerminate();
     return 0;

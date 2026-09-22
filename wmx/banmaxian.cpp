@@ -1,6 +1,7 @@
 // 斑马线纯视觉检测测试
 // 算法参考：smartCar-main/g5g-new/crossroad.cpp
-// 采集摄像头、显示检测效果并打印结果，不控制 GPIO、电机或舵机。
+// 更新说明：摄像头改为先采集 1920x1080，再缩放到 320x180 做斑马线检测，保留更完整视野。
+// 更新日期：2026-09
 
 #include <opencv2/opencv.hpp>
 
@@ -12,8 +13,10 @@ using namespace cv;
 using namespace std;
 
 namespace ZebraConfig {
-	constexpr int image_width = 640;
-	constexpr int image_height = 480;
+	constexpr int capture_width = 1920;
+	constexpr int capture_height = 1080;
+	constexpr int image_width = 320;
+	constexpr int image_height = 180;
 
 	// OTSU 阈值下限。过暗场景中自动阈值过低会令跑道大面积变白。
 	constexpr double otsu_threshold_min = 100.0;
@@ -23,9 +26,9 @@ namespace ZebraConfig {
 
 	// 白色色块判断：至少找到 4 个面积足够的白色色块。
 	constexpr int required_blocks = 4;
-	constexpr int block_min_area = 350;
-	constexpr int block_min_width = 10;
-	constexpr int block_min_height = 6;
+	constexpr int block_min_area = 65;
+	constexpr int block_min_width = 5;
+	constexpr int block_min_height = 3;
 
 	// 连续多帧确认，降低单帧误检概率。
 	constexpr int confirm_frames = 3;
@@ -130,8 +133,8 @@ int main() {
 		return 1;
 	}
 
-	camera.set(CAP_PROP_FRAME_WIDTH, ZebraConfig::image_width);
-	camera.set(CAP_PROP_FRAME_HEIGHT, ZebraConfig::image_height);
+	camera.set(CAP_PROP_FRAME_WIDTH, ZebraConfig::capture_width);
+	camera.set(CAP_PROP_FRAME_HEIGHT, ZebraConfig::capture_height);
 	camera.set(CAP_PROP_FPS, 30);
 	camera.set(CAP_PROP_BUFFERSIZE, 1);
 
