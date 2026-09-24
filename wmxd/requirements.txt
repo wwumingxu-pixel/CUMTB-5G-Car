@@ -1,0 +1,5 @@
+# Canny 视觉测试工具依赖
+# Python 3.10+，Windows Tkinter 通常随官方 Python 安装包提供
+numpy>=1.24
+opencv-python>=4.8
+Pillow>=10.0

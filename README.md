@@ -18,7 +18,9 @@ Release 中提供三个无需单独配置 Python 环境的 Windows 测试工具�
 - `CannyTester.exe`：测试图片 Canny 边缘检测与巡线效果验证。
 - `CannyVideoTester.exe`：读取视频或摄像头画面进行连续帧 Canny 巡线测试。
 
-详细使用方法见 [`wmxd/README.md`](./wmxd/README.md)。这些工具仅用于视觉算法验证，不控制树莓派 GPIO、电机或舵机。
+Release `v1.1.0` 中虽然已经上传了三个 EXE，但从 `v1.2.0` 开始同时提供完整 Windows 工具包：对应 Python 源码、PyInstaller spec、`requirements.txt`、启动脚本和故障排查说明。完整说明见 [`wmxd/README.md`](./wmxd/README.md)。
+
+如果 EXE 被 Windows Defender 拦截，或在当前电脑上无法启动，可以按 `wmxd/README.md` 中的说明安装 Python 依赖后直接运行源码。三个 EXE 为 PyInstaller 单文件程序，OpenCV、NumPy、Pillow 等运行库已内置，正常情况下不需要手动复制 DLL。
 
 
 - **摄像头采集链路优化**：需要视觉处理或图传的程序不再直接请求低分辨率；改为先采集 `1920x1080`，再根据程序用途缩放到 `320x180` 或 `640x360`，以保留更完整的摄像头视野并降低后续处理负担。
